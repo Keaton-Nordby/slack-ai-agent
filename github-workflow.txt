@@ -1,0 +1,34 @@
+Your workflow going forward
+
+Every time you add a meaningful feature:
+
+git checkout main
+git pull origin main
+
+git checkout -b feature/new-feature
+
+# code...
+
+git add .
+git commit -m "feat: implement new feature"
+git push -u origin feature/new-feature
+
+Create a PR on GitHub, merge it, then:
+
+git checkout main
+git pull origin main
+git branch -d feature/new-feature
+
+Rinse and repeat.
+
+One suggestion for your portfolio
+
+Try to keep commits relatively focused. For example, for this Slack AI agent:
+
+feat: initialize Slack Bolt application
+feat: integrate OpenAI chat model
+feat: add member join event handlers
+feat: implement user profile analysis
+docs: add production-style documentation
+refactor: centralize logging utilities
+fix: handle Slack API error responses
