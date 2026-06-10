@@ -157,7 +157,41 @@ class SlackAIAgent {
     });
   }
 
+  /**
+   * Retrieves detailed information for a Slack user by their user ID.
+   *
+   * Calls the Slack Web API to fetch a user's profile and returns
+   * a simplified, normalized object containing commonly used fields
+   * such as name, email, title, timezone, and basic profile details.
+   *
+   * @async
+   * @param {string} userId - The Slack user ID to look up.
+   * @returns {Promise<Object>} A normalized user object containing:
+   *   - id: Slack user ID
+   *   - name: User's display name or real name
+   *   - username: Slack username
+   *   - email: User's email address (if available)
+   *   - title: Job title (if available)
+   *   - timezone: User's configured timezone
+   *   - profile: Basic profile information including first name,
+   *     last name, and status text
+   */
   async getUserInfo(userId) {
     const result = await this.WebClient.users.info({ user: userId });
+    const user = result.user;
+
+    return {
+      id: user.id,
+      name: user.real_name || user.name,
+      username: user.name,
+      email: user.profile?.email,
+      title: user.profile?.title,
+      timezone: user.tz,
+      profile: {
+        firstName: user.profile?.first_name,
+        lastName: user.profile?.last_name,
+        statusText: user.profile?.status_text,
+      },
+    };
   }
 }
