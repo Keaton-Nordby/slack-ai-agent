@@ -195,6 +195,20 @@ class SlackAIAgent {
     };
   }
 
+  /**
+   * Orchestrates the complete member analysis workflow.
+   *
+   * This function performs basic research on a member, generates an AI-powered
+   * analysis, persists the results to the database, posts the analysis to Slack,
+   * and updates the record to indicate successful delivery. Comprehensive error
+   * handling ensures failures are logged and partially completed operations can
+   * be identified for troubleshooting or retry.
+   *
+   * @async
+   * @returns {Promise<void>} Resolves when the member has been fully processed.
+   * @throws {Error} Propagates any error encountered during research, analysis,
+   * persistence, or Slack notification.
+   */
   async analyzeAndPostMember() {
     let analysysId = null;
     try {
@@ -218,5 +232,40 @@ class SlackAIAgent {
       }
       throw error;
     }
+  }
+
+  /**
+   * Performs basic enrichment research for a member using available public signals.
+   *
+   * This function gathers lightweight contextual data about a member to support
+   * downstream AI analysis. It attempts to enrich the member profile using:
+   * - Company information derived from the email domain (if available and not personal email)
+   * - GitHub profile information based on the member’s name
+   *
+   * The function is intentionally non-blocking and best-effort:
+   * failures in external lookups are caught and logged without interrupting execution.
+   *
+   * @async
+   * @function doBasicResearch
+   * @returns {Promise<Array>} Array of collected enrichment data (e.g., company info, GitHub info)
+   */
+  async doBasicResearch(memberInfo) {
+    const results = [];
+
+    try {
+      if (memberInfo.email && !this.personalEmail(memberInfo.email)) {
+        const domain = memberInfo.email.split("@")[1];
+        const companyInfo = await this.getCompanyInfo(domain);
+        if (companyInfo) results.push(companyInfo);
+
+        if (memberInfo.name) {
+          const githubInfo = await this.getGitHubInfo(memberInfo.name);
+          if (githubInfo) results.push(githubInfo);
+        }
+      }
+    } catch (error) {
+      log.error("Research error: ", error.message);
+    }
+    return results;
   }
 }
