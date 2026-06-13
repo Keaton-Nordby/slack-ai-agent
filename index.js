@@ -548,4 +548,96 @@ class SlackAIAgent {
     const domain = email.split("@")[1]?.toLowerCase();
     return personalDomains.includes(domain);
   }
+
+  /**
+   * Starts the Slack AI Agent and all required application services.
+   *
+   * Performs application startup in the following order:
+   * - Initializes the database connection.
+   * - Starts the Express web server.
+   * - Connects the Slack Bolt application.
+   * - Logs application status and available development endpoints.
+   *
+   * If any startup step fails, the error is logged and the
+   * application exits with a non-zero status code.
+   *
+   * @async
+   * @returns {Promise<void>}
+   * @throws Does not propagate errors. Terminates the process if
+   * initialization fails.
+   */
+  async start() {
+    try {
+      log.info("Starting Slack AI Agent...");
+
+      log.info("Initializing database...");
+      await initDatabase();
+
+      const port = process.env.PORT || 3000;
+
+      log.info(`Starting Express server on port ${port}...`);
+      this.server = this.app.listen(port, () => {
+        log.info(`Express server listening on port ${port}`);
+      });
+
+      log.info("Connecting to Slack...");
+      await this.slack.start();
+      log.info("Slack bot connected");
+
+      log.info("Slack AI Agent started successfully");
+
+      if (process.env.NODE_ENV === "development") {
+        log.info(
+          `Test endpoint: POST http://localhost:${port}/test/analyze-member`,
+        );
+      }
+    } catch (error) {
+      log.error("Failed to start:", error.message);
+      process.exit(1);
+    }
+  }
+  /**
+   * Gracefully shuts down the Slack AI Agent and associated services.
+   *
+   * Performs an orderly shutdown by:
+   * - Disconnecting the Slack client.
+   * - Closing the Express server.
+   * - Closing the database connection.
+   *
+   * Any shutdown errors are logged before the application exits.
+   *
+   * @async
+   * @returns {Promise<void>}
+   */
+  async stop() {
+    log.info("Shutting down Slack AI Agent...");
+
+    try {
+      await this.slack.stop();
+
+      if (this.server) {
+        await new Promise((resolve) => this.server.close(resolve));
+      }
+
+      await closeDatabase();
+
+      log.info("Slack AI Agent stopped successfully");
+    } catch (error) {
+      log.error("Shutdown error:", error.message);
+    }
+
+    process.exit(0);
+  }
 }
+
+const agent = new SlackAIAgent();
+
+process.on("SIGINT", () => agent.stop());
+process.on("SIGTERM", () => agent.stop());
+
+agent.start().catch((error) => {
+  console.error("Startup failed:", error.message);
+  process.exit(1);
+});
+
+export default agent;
