@@ -1,5 +1,5 @@
 import pkg from "@slack/bolt";
-const { APP } = pkg;
+const { App } = pkg;
 
 import { WebClient } from "@slack/web-api";
 import { ChatOpenAI } from "@langchain/openai";
@@ -21,7 +21,7 @@ const log = {
   info: (msg, ...args) => console.log(`[INFO] ${msg}`, ...args),
   error: (msg, ...args) => console.log(`[ERROR] ${msg}`, ...args),
   debug: (msg, ...args) =>
-    process.env.NODE_ENV === "developement" &&
+    process.env.NODE_ENV === "development" &&
     console.log(`[DEBUG] ${msg}`, ...args),
 };
 
@@ -51,17 +51,17 @@ class SlackAIAgent {
     this.slack = new App({
       token: process.env.SLACK_BOT_TOKEN,
       signingSecret: process.env.SLACK_SIGNING_SECRET,
-      socketMpde: true,
+      socketMode: true,
       appToken: process.env.SLACK_APP_TOKEN,
     });
     this.WebClient = new WebClient(process.env.SLACK_BOT_TOKEN);
     this.openai = new ChatOpenAI({
       model: "gpt-4",
-      temerature: 0.3,
-      apiKey: process.env.OPENAI_APY_KEY,
+      temperature: 0.3,
+      apiKey: process.env.OPENAI_API_KEY,
     });
 
-    this.setUpSlackEvents;
+    this.setUpSlackEvents();
     this.setupExpress();
   }
 
@@ -151,7 +151,7 @@ class SlackAIAgent {
       });
     }
 
-    this.app.use((err, req, res, next) => {
+    this.app.use((err, req, res, _next) => {
       log.error("Express error", err.message);
       res.status(500).json({ error: "Internal server error" });
     });
@@ -209,8 +209,8 @@ class SlackAIAgent {
    * @throws {Error} Propagates any error encountered during research, analysis,
    * persistence, or Slack notification.
    */
-  async analyzeAndPostMember() {
-    let analysysId = null;
+  async analyzeAndPostMember(memberInfo) {
+    let analysisId = null;
     try {
       log.info(`Processing member: ${memberInfo.name}`);
       const researchData = await this.doBasicResearch(memberInfo);
@@ -220,14 +220,14 @@ class SlackAIAgent {
 
       await this.postAnalysisToChannel(memberInfo, analysis, researchData);
 
-      if (analysis) {
-        await markAsSentToSlack(analysysId);
+      if (analysisId) {
+        await markAsSentToSlack(analysisId);
       }
     } catch (error) {
-      log.error(`Error processing ${memberInfo}: `, error.message);
-      if (analysysId) {
+      log.error(`Error processing ${memberInfo.name}: `, error.message);
+      if (analysisId) {
         log.info(
-          `Analysus ${analysis} saved to database but not send to Slack due to error`,
+          `Analysis ${analysisId} saved to database but not sent to Slack due to an error.`,
         );
       }
       throw error;
@@ -253,7 +253,7 @@ class SlackAIAgent {
     const results = [];
 
     try {
-      if (memberInfo.email && !this.personalEmail(memberInfo.email)) {
+      if (memberInfo.email && !this.isPersonalEmail(memberInfo.email)) {
         const domain = memberInfo.email.split("@")[1];
         const companyInfo = await this.getCompanyInfo(domain);
         if (companyInfo) results.push(companyInfo);
@@ -424,5 +424,128 @@ class SlackAIAgent {
         recommendations: ["Manual review recommended"],
       };
     }
+  }
+
+  /**
+   * Formats and posts an AI-generated member analysis to a private Slack
+   * channel using Block Kit components.
+   *
+   * Creates a color-coded summary based on the member's fit score,
+   * includes contact information, AI-generated insights, and recommended
+   * engagement strategies, then sends the formatted message to Slack.
+   *
+   * @async
+   * @param {Object} member - Information about the community member.
+   * @param {string} member.name - Member's full name.
+   * @param {string} [member.email] - Member's email address.
+   * @param {string} [member.title] - Member's job title.
+   * @param {Object} analysis - AI-generated member analysis.
+   * @param {number} analysis.fitScore - Product fit score (0-100).
+   * @param {string[]} analysis.insights - Key observations about the member.
+   * @param {string[]} analysis.recommendations - Suggested engagement actions.
+   * @param {Array<Object>} researchData - Research collected for the member.
+   * @returns {Promise<void>}
+   *
+   * @throws Propagates Slack API errors if the message cannot be delivered.
+   */
+  async postAnalysisToChannel(member, analysis, researchData) {
+    const color =
+      analysis.fitScore >= 80
+        ? "#36a64f"
+        : analysis.fitScore >= 60
+          ? "#ffb84d"
+          : analysis.fitScore >= 40
+            ? "#ff9500"
+            : "#ff4444";
+
+    const blocks = [
+      {
+        type: "header",
+        text: { type: "plain_text", text: `New Member: ${member.name}` },
+      },
+      {
+        type: "section",
+        fields: [
+          { type: "mrkdwn", text: `*Fit Score:* ${analysis.fitScore}/100` },
+          {
+            type: "mrkdwn",
+            text: `*Email:* ${member.email || "Not provided"}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Title:* ${member.title || "Not provided"}`,
+          },
+        ],
+      },
+    ];
+
+    if (analysis.insights.length > 0) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Insights:*\n${analysis.insights
+            .map((i) => `• ${i}`)
+            .join("\n")}`,
+        },
+      });
+    }
+
+    if (analysis.recommendations.length > 0) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Recommendations:*\n${analysis.recommendations
+            .map((i) => `• ${i}`)
+            .join("\n")}`,
+        },
+      });
+    }
+
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `Analyzed: ${new Date().toISOString()}`,
+        },
+      ],
+    });
+
+    await this.WebClient.chat.postMessage({
+      channel: process.env.SLACK_PRIVATE_CHANNEL_ID,
+      text: `New Member Analysis: ${member.name} (${analysis.fitScore}/100)`,
+      attachments: [
+        {
+          color: color,
+          blocks: blocks,
+        },
+      ],
+    });
+    log.info(`Analysis posted to channel for ${member.name}`);
+  }
+
+  /**
+   * Determines whether an email address belongs to a common personal
+   * email provider rather than a business domain.
+   *
+   * Used to help distinguish individual contacts from corporate
+   * identities during member analysis and qualification.
+   *
+   * @param {string} email - Email address to evaluate.
+   * @returns {boolean} True if the email uses a recognized personal
+   * provider; otherwise, false.
+   */
+  isPersonalEmail(email) {
+    const personalDomains = [
+      "gmail.com",
+      "yahoo.com",
+      "hotmail.com",
+      "outlook.com",
+      "icloud.com",
+    ];
+    const domain = email.split("@")[1]?.toLowerCase();
+    return personalDomains.includes(domain);
   }
 }
