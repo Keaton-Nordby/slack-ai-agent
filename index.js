@@ -13,7 +13,7 @@ import {
   saveMemberAnalysis,
   markAsSentToSlack,
   closeDatabase,
-} from "./db";
+} from "./db.js";
 
 dotenv.config();
 
