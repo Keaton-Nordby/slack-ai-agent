@@ -268,4 +268,73 @@ class SlackAIAgent {
     }
     return results;
   }
+
+  /**
+   * Attempts to fetch basic metadata about a company website using its domain.
+   *
+   * This function performs a simple HTTP request to the provided domain,
+   * extracts the HTML <title> tag, and returns a lightweight company object.
+   * If the request fails (timeout, invalid domain, or network error),
+   * it logs the error and returns null.
+   *
+   * NOTE:
+   * This is a best-effort scraper and not a reliable business intelligence API.
+   *
+   * @param {string} domain - The company domain (e.g., "openai.com")
+   * @returns {Promise<Object|null>} Simplified company metadata object or null if fetch fails
+   */
+  async getCompanyInfo(domain) {
+    try {
+      const response = await axios.get(`https://www.${domain}`, {
+        timeout: 5000,
+        headers: { "User-Agent": "Mozilla/5.0" },
+      });
+
+      const titleMatch = response.data.match(/<title>(.*?)<\/title/i);
+      const title = titleMatch ? titleMatch[1] : `Company: ${domain}`;
+
+      return {
+        url: `https://www.${domain}`,
+        title: title,
+        content: `Company website for ${domain}`,
+        type: "company",
+      };
+    } catch (error) {
+      log.error(`Could not fetch ${domain}: `, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Searches GitHub users by name and returns basic profile information
+   * for the best matching user.
+   *
+   * This function uses the GitHub Search API to find users matching the
+   * provided query string and returns a simplified profile of the first result.
+   * If no users are found or the request fails, it returns null.
+   *
+   * @param {string} name - Username or search term for GitHub user lookup
+   * @returns {Promise<Object|null>} Simplified GitHub user info or null if not found
+   */
+  async getGitHubInfo(name) {
+    try {
+      const response = await axios.get(
+        `https://api.github.com/search/users?q=${encodeURIComponent(name)}`,
+        { timeout: 5000 },
+      );
+
+      if (response.data.items && response.data.items.length > 0) {
+        const user = response.data.items[0];
+        return {
+          url: user.html_url,
+          title: `GitHub: ${user.login}`,
+          content: `${user.public_repos} public repositories`,
+          type: "github",
+        };
+      }
+    } catch (error) {
+      log.debug("GitHub search error: ", error.message);
+    }
+    return null;
+  }
 }
