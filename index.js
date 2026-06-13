@@ -337,4 +337,92 @@ class SlackAIAgent {
     }
     return null;
   }
+
+  /**
+   * Analyzes a community member's profile and research data using an AI model
+   * to estimate product fit and generate engagement recommendations.
+   *
+   * Builds a structured prompt containing member information and external
+   * research, sends it to the configured LLM, and parses the JSON response
+   * into a standardized format. Includes validation and fallback defaults
+   * to ensure reliable output even if the AI response is incomplete.
+   *
+   * @async
+   * @param {Object} memberInfo - Basic information about the community member.
+   * @param {string} memberInfo.name - Member's full name.
+   * @param {string} [memberInfo.email] - Member's email address.
+   * @param {string} [memberInfo.title] - Member's job title.
+   * @param {Array<Object>} researchData - Collected research about the member.
+   * @returns {Promise<Object>} AI-generated member analysis.
+   * @returns {number} returns.fitScore - Product fit score (0-100).
+   * @returns {string[]} returns.insights - Key observations about the member.
+   * @returns {string[]} returns.recommendations - Suggested engagement strategies.
+   *
+   * @throws Does not propagate errors. Returns a default analysis object
+   * if AI generation or JSON parsing fails.
+   */
+  async analyzeWithAI(memberInfo, researchData) {
+    const prompt = ChatPromptTemplate.fromTemplate(
+      `Analyze this new community member for fit with our commercial 
+    product.
+
+    Company: ${process.env.COMPANY_NAME || "Your Company"}
+    Product: ${process.env.COMPANY_PRODUCT || "Your Product"}
+
+    Member:
+    - Name: {name}
+    - Email: {email}
+    - Title: {title}
+
+    Research Data:
+    {research}
+
+    Provide a JSON response with:
+    - fitScore (0-100): likelihood they'd be interested in our product
+    - insights: array of 3-5 key observations
+    - recommendations: array of 2-4 engagement suggestions
+
+    Consider job title, company size, technical background, and budget 
+    authority.`,
+    );
+
+    try {
+      const researchSummary =
+        researchData.length > 0
+          ? researchData.map((r) => `${r.title}: ${r.content}`).join(`\\n`)
+          : "Limited research data available";
+
+      const chain = prompt.pipe(this.openai);
+      const result = await chain.invoke({
+        name: memberInfo.name,
+        email: memberInfo.email || "Not provided",
+        title: memberInfo.title || "Not provided",
+        research: researchSummary,
+      });
+
+      const responseText = result.content || result;
+      const cleanedResponse = responseText
+        .replace(/```json\n?|\n?```/g, "")
+        .trim();
+
+      const analysis = JSON.parse(cleanedResponse);
+
+      return {
+        fitScore: Math.max(0, Math.min(100, analysis.fitScore || 50)),
+        insights: Array.isArray(analysis.insights)
+          ? analysis.insights
+          : ["Analysis completed"],
+        recommendations: Array.isArray(analysis.recommendations)
+          ? analysis.recommendations
+          : ["Follow up recommended"],
+      };
+    } catch (error) {
+      log.error("AI analysis error: ", error.message);
+      return {
+        fitScore: 50,
+        insights: ["unable to complete full analysis"],
+        recommendations: ["Manual review recommended"],
+      };
+    }
+  }
 }
