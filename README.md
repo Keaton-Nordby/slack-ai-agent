@@ -34,10 +34,12 @@ LangChain
 OpenAI GPT-4 / GPT-4o
 PostgreSQL
 Axios
+
 📦 Installation
 git clone https://github.com/yourusername/slack-ai-agent.git
 cd slack-ai-agent
 npm install
+
 🔐 Environment Variables
 
 Create a .env file:
