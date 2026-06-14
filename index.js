@@ -63,7 +63,7 @@ class SlackAIAgent {
     });
     this.WebClient = new WebClient(process.env.SLACK_BOT_TOKEN);
     this.openai = new ChatOpenAI({
-      model: "gpt-4",
+      model: "gpt-4o",
       temperature: 0.3,
       apiKey: process.env.OPENAI_API_KEY,
     });
@@ -218,25 +218,66 @@ class SlackAIAgent {
    */
   async analyzeAndPostMember(memberInfo) {
     let analysisId = null;
+
     try {
       log.info(`Processing member: ${memberInfo.name}`);
-      const researchData = await this.doBasicResearch(memberInfo);
-      const analysis = await this.analyzeWithAI(memberInfo, researchData);
-      log.info(`Saving analysis to database for ${memberInfo.name}`);
-      analysisId = await saveMemberAnalysis(memberInfo, analysis, researchData);
 
-      await this.postAnalysisToChannel(memberInfo, analysis, researchData);
-
-      if (analysisId) {
-        await markAsSentToSlack(analysisId);
+      // 1. Research (safe fail)
+      let researchData = [];
+      try {
+        researchData = await this.doBasicResearch(memberInfo);
+      } catch (err) {
+        log.error("Research failed:", err.message);
       }
-    } catch (error) {
-      log.error(`Error processing ${memberInfo.name}: `, error.message);
-      if (analysisId) {
-        log.info(
-          `Analysis ${analysisId} saved to database but not sent to Slack due to an error.`,
+
+      // 2. AI analysis (critical failure point)
+      let analysis;
+      try {
+        analysis = await this.analyzeWithAI(memberInfo, researchData);
+      } catch (err) {
+        log.error("AI analysis failed:", err.message);
+        analysis = {
+          fitScore: 50,
+          insights: ["AI analysis failed, fallback used"],
+          recommendations: ["Manual review recommended"],
+        };
+      }
+
+      // 3. DB save (safe fail)
+      try {
+        log.info(`Saving analysis to database for ${memberInfo.name}`);
+        analysisId = await saveMemberAnalysis(
+          memberInfo,
+          analysis,
+          researchData,
         );
+      } catch (err) {
+        log.error("DB save failed:", err.message);
       }
+
+      // 4. Slack post (safe fail)
+      try {
+        await this.postAnalysisToChannel(memberInfo, analysis, researchData);
+      } catch (err) {
+        log.error("Slack post failed:", err.message);
+      }
+
+      // 5. Mark as sent (safe fail)
+      if (analysisId) {
+        try {
+          await markAsSentToSlack(analysisId);
+        } catch (err) {
+          log.error("Mark as sent failed:", err.message);
+        }
+      }
+
+      return {
+        success: true,
+        analysisId,
+        analysis,
+      };
+    } catch (error) {
+      log.error(`Fatal pipeline error for ${memberInfo.name}:`, error.message);
       throw error;
     }
   }
@@ -369,37 +410,44 @@ class SlackAIAgent {
    * if AI generation or JSON parsing fails.
    */
   async analyzeWithAI(memberInfo, researchData) {
-    const prompt = ChatPromptTemplate.fromTemplate(
-      `Analyze this new community member for fit with our commercial 
-    product.
+    const prompt = ChatPromptTemplate.fromTemplate(`
+You are an expert SaaS sales intelligence analyst.
 
-    Company: ${process.env.COMPANY_NAME || "Your Company"}
-    Product: ${process.env.COMPANY_PRODUCT || "Your Product"}
+Analyze this member.
 
-    Member:
-    - Name: {name}
-    - Email: {email}
-    - Title: {title}
+Company: ${process.env.COMPANY_NAME || "Your Company"}
+Product: ${process.env.COMPANY_PRODUCT || "Your Product"}
 
-    Research Data:
-    {research}
+Member:
+- Name: {name}
+- Email: {email}
+- Title: {title}
 
-    Provide a JSON response with:
-    - fitScore (0-100): likelihood they'd be interested in our product
-    - insights: array of 3-5 key observations
-    - recommendations: array of 2-4 engagement suggestions
+Research:
+{research}
 
-    Consider job title, company size, technical background, and budget 
-    authority.`,
-    );
+Return ONLY valid JSON in this exact format:
+
+{{
+  "fitScore": number,
+  "insights": ["string", "string"],
+  "recommendations": ["string", "string"]
+}}
+
+Rules:
+- No markdown
+- No explanation
+- No backticks
+- Output must be valid JSON only
+`);
 
     try {
-      const researchSummary =
-        researchData.length > 0
-          ? researchData.map((r) => `${r.title}: ${r.content}`).join(`\\n`)
-          : "Limited research data available";
+      const researchSummary = researchData?.length
+        ? researchData.map((r) => `${r.title}: ${r.content}`).join("\n")
+        : "No research available";
 
       const chain = prompt.pipe(this.openai);
+
       const result = await chain.invoke({
         name: memberInfo.name,
         email: memberInfo.email || "Not provided",
@@ -407,32 +455,52 @@ class SlackAIAgent {
         research: researchSummary,
       });
 
-      const responseText = result.content || result;
-      const cleanedResponse = responseText
-        .replace(/```json\n?|\n?```/g, "")
-        .trim();
+      const text = (result.content ?? result).toString().trim();
 
-      const analysis = JSON.parse(cleanedResponse);
+      log.debug("RAW AI OUTPUT:", text);
+
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+
+      if (start === -1 || end === -1 || end <= start) {
+        throw new Error("AI response did not contain JSON object");
+      }
+
+      const jsonString = text.slice(start, end + 1);
+
+      let analysis;
+      try {
+        analysis = JSON.parse(jsonString);
+      } catch (err) {
+        log.error("Failed to parse JSON. Raw extracted string:");
+        log.error(jsonString);
+        throw new Error("Invalid JSON from AI");
+      }
+
+      // strict validation (prevents silent bad data)
+      if (
+        typeof analysis.fitScore !== "number" ||
+        !Array.isArray(analysis.insights) ||
+        !Array.isArray(analysis.recommendations)
+      ) {
+        throw new Error("AI response shape invalid");
+      }
 
       return {
-        fitScore: Math.max(0, Math.min(100, analysis.fitScore || 50)),
-        insights: Array.isArray(analysis.insights)
-          ? analysis.insights
-          : ["Analysis completed"],
-        recommendations: Array.isArray(analysis.recommendations)
-          ? analysis.recommendations
-          : ["Follow up recommended"],
+        fitScore: Math.max(0, Math.min(100, analysis.fitScore)),
+        insights: analysis.insights,
+        recommendations: analysis.recommendations,
       };
     } catch (error) {
-      log.error("AI analysis error: ", error.message);
+      log.error("AI analysis error:", error.message);
+
       return {
         fitScore: 50,
-        insights: ["unable to complete full analysis"],
-        recommendations: ["Manual review recommended"],
+        insights: ["fallback analysis used"],
+        recommendations: ["manual review recommended"],
       };
     }
   }
-
   /**
    * Formats and posts an AI-generated member analysis to a private Slack
    * channel using Block Kit components.
